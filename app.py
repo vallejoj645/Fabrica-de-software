@@ -73,7 +73,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print("✅ Base de datos inicializada correctamente.")
+    print("Base de datos inicializada correctamente.")
 
 
 # ✅ FIX 2: init_db() se llama al importar el módulo,
@@ -117,6 +117,10 @@ def requiere_auth(f):
 @app.route("/")
 def index():
     return send_from_directory(".", "index.html")
+
+@app.route("/<path:filename>")
+def static_files(filename):
+    return send_from_directory(".", filename)
 
 
 # ── API: REGISTRO DE LEAD ───────────────────────────────────────

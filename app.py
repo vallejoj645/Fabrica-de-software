@@ -4,12 +4,13 @@ CodeForge Studio · Backend API
 Servidor Flask con SQLite para registro de clientes potenciales.
 
 Instalación:
-    pip install flask flask-cors
+    pip install flask flask-cors gunicorn
 
-Ejecución:
+Ejecución local:
     python app.py
 
-La app estará disponible en: http://localhost:5000
+Producción (Railway):
+    gunicorn app:app
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -18,31 +19,31 @@ import sqlite3
 import os
 import re
 from datetime import datetime
+from functools import wraps
 
 # ── CONFIGURACIÓN ──────────────────────────────────────────────
 app = Flask(__name__, static_folder=".", static_url_path="")
-CORS(app)  # Permitir peticiones desde cualquier origen
+CORS(app)
 
-ADMIN_USER = "admin"
-ADMIN_PASS = "123456"
+# ✅ FIX 3: nombre de BD sin caracteres especiales
+DB_PATH = "codeforge.db"
 
-DB_PATH = "cocode+.db"
+# ✅ FIX 4: credenciales desde variables de entorno (más seguro)
+# En Railway: Settings → Variables → agregar ADMIN_USER y ADMIN_PASS
+ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "cambia_esta_clave")
 
 
 # ── BASE DE DATOS ───────────────────────────────────────────────
 def get_db():
-    """Retorna una conexión a la base de datos SQLite."""
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Resultados como diccionarios
+    conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
-    """Crea las tablas si no existen."""
     conn = get_db()
     cursor = conn.cursor()
-
-    # Tabla principal: clientes potenciales (leads)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS leads (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,13 +59,9 @@ def init_db():
             creado_en   TEXT    NOT NULL
         )
     """)
-
-    # Índice para búsquedas rápidas por email
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)
     """)
-
-    # Tabla de log de actividad (auditoría)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS actividad_log (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,10 +71,14 @@ def init_db():
             creado_en   TEXT    NOT NULL
         )
     """)
-
     conn.commit()
     conn.close()
-    print("Base de datos inicializada correctamente.")
+    print("✅ Base de datos inicializada correctamente.")
+
+
+# ✅ FIX 2: init_db() se llama al importar el módulo,
+#    así funciona tanto con `python app.py` como con Gunicorn
+init_db()
 
 
 # ── UTILIDADES ──────────────────────────────────────────────────
@@ -101,23 +102,28 @@ def log_actividad(accion: str, lead_id: int = None, detalle: str = None):
     conn.close()
 
 
+# ✅ FIX 4: decorador de autenticación básica para rutas admin
+def requiere_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+            return jsonify({"error": "Acceso no autorizado"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
 # ── RUTAS FRONTEND ─────────────────────────────────────────────
 @app.route("/")
 def index():
-    """Sirve el archivo HTML principal."""
     return send_from_directory(".", "index.html")
 
 
 # ── API: REGISTRO DE LEAD ───────────────────────────────────────
 @app.route("/api/registro", methods=["POST"])
 def registrar_lead():
-    """
-    Registra un cliente potencial en la base de datos.
-    Espera un JSON con: nombre, empresa, email, telefono, servicio, presupuesto, mensaje
-    """
     data = request.get_json(silent=True)
 
-    # ── Validación de datos ──
     if not data:
         return jsonify({"error": "No se recibieron datos"}), 400
 
@@ -132,7 +138,6 @@ def registrar_lead():
     if not validar_telefono(data["telefono"]):
         return jsonify({"error": "El número de teléfono no es válido"}), 422
 
-    # ── Sanitizar datos ──
     nombre      = data["nombre"].strip()[:120]
     empresa     = data.get("empresa", "").strip()[:120]
     email       = data["email"].strip().lower()[:200]
@@ -142,7 +147,6 @@ def registrar_lead():
     mensaje     = data["mensaje"].strip()[:2000]
     ip_origen   = request.remote_addr
 
-    # ── Insertar en la base de datos ──
     conn = get_db()
     try:
         cursor = conn.execute("""
@@ -154,15 +158,13 @@ def registrar_lead():
         lead_id = cursor.lastrowid
         conn.commit()
     except sqlite3.Error as e:
-        conn.close()
         print(f"❌ Error de base de datos: {e}")
         return jsonify({"error": "Error interno al guardar el registro"}), 500
     finally:
         conn.close()
 
-    # ── Log de auditoría ──
     log_actividad("nuevo_lead", lead_id, f"Servicio: {servicio} | Email: {email}")
-    print(f"✅ Nuevo lead registrado: [{lead_id}] {nombre} <{email}> — {servicio}")
+    print(f"✅ Nuevo lead: [{lead_id}] {nombre} <{email}> — {servicio}")
 
     return jsonify({
         "ok": True,
@@ -171,13 +173,10 @@ def registrar_lead():
     }), 201
 
 
-# ── API: LISTAR LEADS (panel admin) ────────────────────────────
+# ── API: LISTAR LEADS — protegido con usuario y contraseña ─────
 @app.route("/api/leads", methods=["GET"])
+@requiere_auth  # ✅ FIX 4: ahora requiere autenticación
 def listar_leads():
-    """
-    Lista todos los clientes registrados.
-    Parámetros opcionales: ?estado=nuevo&limite=50&pagina=1
-    """
     estado = request.args.get("estado")
     limite = min(int(request.args.get("limite", 50)), 200)
     pagina = max(int(request.args.get("pagina", 1)), 1)
@@ -208,13 +207,10 @@ def listar_leads():
     })
 
 
-# ── API: ACTUALIZAR ESTADO DE LEAD ─────────────────────────────
+# ── API: ACTUALIZAR ESTADO ─────────────────────────────────────
 @app.route("/api/leads/<int:lead_id>/estado", methods=["PATCH"])
+@requiere_auth  # ✅ FIX 4: protegido
 def actualizar_estado(lead_id: int):
-    """
-    Actualiza el estado de un lead.
-    Estados posibles: nuevo | contactado | en_proceso | cerrado | descartado
-    """
     data = request.get_json(silent=True) or {}
     estados_validos = {"nuevo", "contactado", "en_proceso", "cerrado", "descartado"}
     nuevo_estado = data.get("estado", "").strip()
@@ -238,8 +234,8 @@ def actualizar_estado(lead_id: int):
 
 # ── API: ESTADÍSTICAS ───────────────────────────────────────────
 @app.route("/api/stats", methods=["GET"])
+@requiere_auth  # ✅ FIX 4: protegido
 def estadisticas():
-    """Retorna estadísticas generales del CRM."""
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
     por_estado = conn.execute(
@@ -268,19 +264,15 @@ def health():
 
 
 # ── INICIAR SERVIDOR ────────────────────────────────────────────
+# ✅ FIX 1: un solo bloque, sin debug, leyendo PORT de Railway
 if __name__ == "__main__":
-    init_db()
-    print("""
+    port = int(os.environ.get("PORT", 5000))
+    print(f"""
 ╔══════════════════════════════════════╗
 ║   CodeForge Studio · Backend API     ║
 ╠══════════════════════════════════════╣
-║  http://localhost:5000               ║
-║  Base de datos: codeforge.db         ║
+║  http://localhost:{port:<20}║
+║  Base de datos: {DB_PATH:<21}║
 ╚══════════════════════════════════════╝
     """)
-    app.run(debug=True, host="0.0.0.0", port=5000)
-
-if __name__ == "__main__":
-    init_db()
-    port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)

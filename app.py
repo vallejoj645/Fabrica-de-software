@@ -34,7 +34,6 @@ def get_db():
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS leads (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,11 +49,9 @@ def init_db():
             creado_en   TEXT    NOT NULL
         )
     """)
-
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)
     """)
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS actividad_log (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,13 +61,11 @@ def init_db():
             creado_en   TEXT    NOT NULL
         )
     """)
-
     conn.commit()
     conn.close()
     print("✅ Base de datos inicializada correctamente.")
 
 
-# Se ejecuta al iniciar
 init_db()
 
 
@@ -105,24 +100,10 @@ def requiere_auth(f):
     return decorated
 
 
-# ── RUTAS FRONTEND ─────────────────────────────────────────────
-@app.route("/")
-def index():
-    return send_from_directory(BASE_DIR, "index.html")
-
-
-# 🔥 RUTA DINÁMICA CORREGIDA (SOLUCIÓN CLAVE)
-@app.route("/<path:filename>")
-def static_files(filename):
-    file_path = os.path.join(BASE_DIR, filename)
-
-    print("🔍 Buscando:", file_path)
-
-    if os.path.isfile(file_path):
-        return send_from_directory(BASE_DIR, filename)
-    else:
-        print("❌ No existe:", file_path)
-        return "Archivo no encontrado", 404
+# ── HEALTH CHECK ───────────────────────────────────────────────
+@app.route("/api/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 
 # ── API: REGISTRO DE LEAD ──────────────────────────────────────
@@ -214,21 +195,36 @@ def actualizar_estado(lead_id):
 def estadisticas():
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+    por_estado = conn.execute(
+        "SELECT estado, COUNT(*) as cantidad FROM leads GROUP BY estado"
+    ).fetchall()
     conn.close()
+    return jsonify({
+        "total": total,
+        "por_estado": [dict(r) for r in por_estado]
+    })
 
-    return jsonify({"total": total})
+
+# ── FRONTEND: index ────────────────────────────────────────────
+@app.route("/")
+def index():
+    return send_from_directory(BASE_DIR, "index.html")
 
 
-# ── HEALTH CHECK ───────────────────────────────────────────────
-@app.route("/api/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
+# ── FRONTEND: todos los demás archivos (imágenes, páginas, etc.)
+# ⚠️  Esta ruta SIEMPRE debe ir AL FINAL para no interceptar /api/*
+@app.route("/<path:filename>")
+def static_files(filename):
+    file_path = os.path.join(BASE_DIR, filename)
+    print(f"🔍 Sirviendo: {file_path}")
+    if os.path.isfile(file_path):
+        return send_from_directory(BASE_DIR, filename)
+    print(f"❌ No encontrado: {file_path}")
+    return jsonify({"error": "Archivo no encontrado"}), 404
 
-@app.route('/<path:filename>')
-def serve_static_files(filename):
-    return send_from_directory('.', filename)
-# ── SERVIDOR ───────────────────────────────────────────────────
+
+# ── SERVIDOR LOCAL ─────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 Servidor en puerto {port}")
+    print(f"🚀 Servidor en http://localhost:{port}")
     app.run(host="0.0.0.0", port=port)

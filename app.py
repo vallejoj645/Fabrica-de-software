@@ -10,7 +10,7 @@ Ejecución local:
     python app.py
 
 Producción (Railway):
-    gunicorn app:app
+    python -m gunicorn app:app
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -22,14 +22,15 @@ from datetime import datetime
 from functools import wraps
 
 # ── CONFIGURACIÓN ──────────────────────────────────────────────
-app = Flask(__name__, static_folder=".", static_url_path="")
+# BASE_DIR siempre apunta a la carpeta donde está app.py,
+# sin importar desde dónde Railway arranque el proceso
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
 CORS(app)
 
-# ✅ FIX 3: nombre de BD sin caracteres especiales
-DB_PATH = "codeforge.db"
+DB_PATH = os.path.join(BASE_DIR, "codeforge.db")
 
-# ✅ FIX 4: credenciales desde variables de entorno (más seguro)
-# En Railway: Settings → Variables → agregar ADMIN_USER y ADMIN_PASS
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "cambia_esta_clave")
 
@@ -73,11 +74,10 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    print("Base de datos inicializada correctamente.")
+    print("✅ Base de datos inicializada correctamente.")
 
 
-# ✅ FIX 2: init_db() se llama al importar el módulo,
-#    así funciona tanto con `python app.py` como con Gunicorn
+# Se llama al importar el módulo → funciona con `python app.py` Y con Gunicorn
 init_db()
 
 
@@ -102,7 +102,6 @@ def log_actividad(accion: str, lead_id: int = None, detalle: str = None):
     conn.close()
 
 
-# ✅ FIX 4: decorador de autenticación básica para rutas admin
 def requiere_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -116,11 +115,11 @@ def requiere_auth(f):
 # ── RUTAS FRONTEND ─────────────────────────────────────────────
 @app.route("/")
 def index():
-    return send_from_directory(".", "index.html")
+    return send_from_directory(BASE_DIR, "index.html")
 
 @app.route("/<path:filename>")
 def static_files(filename):
-    return send_from_directory(".", filename)
+    return send_from_directory(BASE_DIR, filename)
 
 
 # ── API: REGISTRO DE LEAD ───────────────────────────────────────
@@ -177,9 +176,9 @@ def registrar_lead():
     }), 201
 
 
-# ── API: LISTAR LEADS — protegido con usuario y contraseña ─────
+# ── API: LISTAR LEADS ──────────────────────────────────────────
 @app.route("/api/leads", methods=["GET"])
-@requiere_auth  # ✅ FIX 4: ahora requiere autenticación
+@requiere_auth
 def listar_leads():
     estado = request.args.get("estado")
     limite = min(int(request.args.get("limite", 50)), 200)
@@ -213,7 +212,7 @@ def listar_leads():
 
 # ── API: ACTUALIZAR ESTADO ─────────────────────────────────────
 @app.route("/api/leads/<int:lead_id>/estado", methods=["PATCH"])
-@requiere_auth  # ✅ FIX 4: protegido
+@requiere_auth
 def actualizar_estado(lead_id: int):
     data = request.get_json(silent=True) or {}
     estados_validos = {"nuevo", "contactado", "en_proceso", "cerrado", "descartado"}
@@ -238,7 +237,7 @@ def actualizar_estado(lead_id: int):
 
 # ── API: ESTADÍSTICAS ───────────────────────────────────────────
 @app.route("/api/stats", methods=["GET"])
-@requiere_auth  # ✅ FIX 4: protegido
+@requiere_auth
 def estadisticas():
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
@@ -268,7 +267,6 @@ def health():
 
 
 # ── INICIAR SERVIDOR ────────────────────────────────────────────
-# ✅ FIX 1: un solo bloque, sin debug, leyendo PORT de Railway
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"""
@@ -276,7 +274,7 @@ if __name__ == "__main__":
 ║   CodeForge Studio · Backend API     ║
 ╠══════════════════════════════════════╣
 ║  http://localhost:{port:<20}║
-║  Base de datos: {DB_PATH:<21}║
+║  Base de datos: codeforge.db         ║
 ╚══════════════════════════════════════╝
     """)
     app.run(debug=False, host="0.0.0.0", port=port)

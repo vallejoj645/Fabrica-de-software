@@ -349,30 +349,6 @@
     lucide.createIcons();
   });
 </script>
-<script>
-document.querySelector("form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-
-  const data = {
-    nombre: document.querySelector('input[placeholder="Nombre"]').value,
-    email: document.querySelector('input[placeholder="Correo"]').value,
-    telefono: "3000000000", // ⚠️ temporal (porque tu form no lo tiene)
-    servicio: "web",        // ⚠️ temporal
-    mensaje: document.querySelector("textarea").value
-  };
-
-  const res = await fetch("/api/registro", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(data)
-  });
-
-  const result = await res.json();
-  alert(result.mensaje || result.error);
-});
-</script>
 <body>
 
 <canvas id="bg-canvas"></canvas>

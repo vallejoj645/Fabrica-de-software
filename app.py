@@ -224,7 +224,9 @@ def estadisticas():
 def health():
     return jsonify({"status": "ok"})
 
-
+@app.route('/<path:filename>')
+def serve_static_files(filename):
+    return send_from_directory('.', filename)
 # ── SERVIDOR ───────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

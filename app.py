@@ -1,16 +1,7 @@
 """
 CodeForge Studio · Backend API
-================================
 Servidor Flask con SQLite para registro de clientes potenciales.
-
-Instalación:
-    pip install flask flask-cors gunicorn
-
-Ejecución local:
-    python app.py
-
-Producción (Railway):
-    python -m gunicorn app:app
+Listo para Railway (con soporte correcto de archivos estáticos)
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -22,8 +13,6 @@ from datetime import datetime
 from functools import wraps
 
 # ── CONFIGURACIÓN ──────────────────────────────────────────────
-# BASE_DIR siempre apunta a la carpeta donde está app.py,
-# sin importar desde dónde Railway arranque el proceso
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
@@ -35,7 +24,7 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "cambia_esta_clave")
 
 
-# ── BASE DE DATOS ───────────────────────────────────────────────
+# ── BASE DE DATOS ──────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -45,6 +34,7 @@ def get_db():
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS leads (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,9 +50,11 @@ def init_db():
             creado_en   TEXT    NOT NULL
         )
     """)
+
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)
     """)
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS actividad_log (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,16 +64,17 @@ def init_db():
             creado_en   TEXT    NOT NULL
         )
     """)
+
     conn.commit()
     conn.close()
     print("✅ Base de datos inicializada correctamente.")
 
 
-# Se llama al importar el módulo → funciona con `python app.py` Y con Gunicorn
+# Se ejecuta al iniciar
 init_db()
 
 
-# ── UTILIDADES ──────────────────────────────────────────────────
+# ── UTILIDADES ─────────────────────────────────────────────────
 def validar_email(email: str) -> bool:
     patron = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(patron, email))
@@ -117,12 +110,22 @@ def requiere_auth(f):
 def index():
     return send_from_directory(BASE_DIR, "index.html")
 
+
+# 🔥 RUTA DINÁMICA CORREGIDA (SOLUCIÓN CLAVE)
 @app.route("/<path:filename>")
 def static_files(filename):
-    return send_from_directory(BASE_DIR, filename)
+    file_path = os.path.join(BASE_DIR, filename)
+
+    print("🔍 Buscando:", file_path)
+
+    if os.path.isfile(file_path):
+        return send_from_directory(BASE_DIR, filename)
+    else:
+        print("❌ No existe:", file_path)
+        return "Archivo no encontrado", 404
 
 
-# ── API: REGISTRO DE LEAD ───────────────────────────────────────
+# ── API: REGISTRO DE LEAD ──────────────────────────────────────
 @app.route("/api/registro", methods=["POST"])
 def registrar_lead():
     data = request.get_json(silent=True)
@@ -136,10 +139,10 @@ def registrar_lead():
             return jsonify({"error": f"El campo '{campo}' es requerido"}), 422
 
     if not validar_email(data["email"]):
-        return jsonify({"error": "El correo electrónico no tiene un formato válido"}), 422
+        return jsonify({"error": "Correo inválido"}), 422
 
     if not validar_telefono(data["telefono"]):
-        return jsonify({"error": "El número de teléfono no es válido"}), 422
+        return jsonify({"error": "Teléfono inválido"}), 422
 
     nombre      = data["nombre"].strip()[:120]
     empresa     = data.get("empresa", "").strip()[:120]
@@ -161,65 +164,35 @@ def registrar_lead():
         lead_id = cursor.lastrowid
         conn.commit()
     except sqlite3.Error as e:
-        print(f"❌ Error de base de datos: {e}")
-        return jsonify({"error": "Error interno al guardar el registro"}), 500
+        print(f"❌ Error DB: {e}")
+        return jsonify({"error": "Error interno"}), 500
     finally:
         conn.close()
 
-    log_actividad("nuevo_lead", lead_id, f"Servicio: {servicio} | Email: {email}")
-    print(f"✅ Nuevo lead: [{lead_id}] {nombre} <{email}> — {servicio}")
-
-    return jsonify({
-        "ok": True,
-        "mensaje": "¡Registro exitoso! Te contactaremos pronto.",
-        "lead_id": lead_id
-    }), 201
+    log_actividad("nuevo_lead", lead_id)
+    return jsonify({"ok": True, "lead_id": lead_id}), 201
 
 
 # ── API: LISTAR LEADS ──────────────────────────────────────────
 @app.route("/api/leads", methods=["GET"])
 @requiere_auth
 def listar_leads():
-    estado = request.args.get("estado")
-    limite = min(int(request.args.get("limite", 50)), 200)
-    pagina = max(int(request.args.get("pagina", 1)), 1)
-    offset = (pagina - 1) * limite
-
     conn = get_db()
-    if estado:
-        rows = conn.execute(
-            "SELECT * FROM leads WHERE estado=? ORDER BY id DESC LIMIT ? OFFSET ?",
-            (estado, limite, offset)
-        ).fetchall()
-        total = conn.execute(
-            "SELECT COUNT(*) FROM leads WHERE estado=?", (estado,)
-        ).fetchone()[0]
-    else:
-        rows = conn.execute(
-            "SELECT * FROM leads ORDER BY id DESC LIMIT ? OFFSET ?",
-            (limite, offset)
-        ).fetchall()
-        total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+    rows = conn.execute("SELECT * FROM leads ORDER BY id DESC").fetchall()
     conn.close()
-
-    return jsonify({
-        "leads": [dict(r) for r in rows],
-        "total": total,
-        "pagina": pagina,
-        "paginas": (total + limite - 1) // limite
-    })
+    return jsonify([dict(r) for r in rows])
 
 
 # ── API: ACTUALIZAR ESTADO ─────────────────────────────────────
 @app.route("/api/leads/<int:lead_id>/estado", methods=["PATCH"])
 @requiere_auth
-def actualizar_estado(lead_id: int):
+def actualizar_estado(lead_id):
     data = request.get_json(silent=True) or {}
     estados_validos = {"nuevo", "contactado", "en_proceso", "cerrado", "descartado"}
     nuevo_estado = data.get("estado", "").strip()
 
     if nuevo_estado not in estados_validos:
-        return jsonify({"error": f"Estado inválido. Opciones: {', '.join(estados_validos)}"}), 422
+        return jsonify({"error": "Estado inválido"}), 422
 
     conn = get_db()
     result = conn.execute(
@@ -229,52 +202,31 @@ def actualizar_estado(lead_id: int):
     conn.close()
 
     if result.rowcount == 0:
-        return jsonify({"error": "Lead no encontrado"}), 404
+        return jsonify({"error": "No encontrado"}), 404
 
-    log_actividad("estado_actualizado", lead_id, f"Nuevo estado: {nuevo_estado}")
-    return jsonify({"ok": True, "estado": nuevo_estado})
+    log_actividad("estado_actualizado", lead_id)
+    return jsonify({"ok": True})
 
 
-# ── API: ESTADÍSTICAS ───────────────────────────────────────────
+# ── API: ESTADÍSTICAS ──────────────────────────────────────────
 @app.route("/api/stats", methods=["GET"])
 @requiere_auth
 def estadisticas():
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
-    por_estado = conn.execute(
-        "SELECT estado, COUNT(*) as cantidad FROM leads GROUP BY estado"
-    ).fetchall()
-    por_servicio = conn.execute(
-        "SELECT servicio, COUNT(*) as cantidad FROM leads GROUP BY servicio ORDER BY cantidad DESC"
-    ).fetchall()
-    ultimos_7_dias = conn.execute(
-        "SELECT COUNT(*) FROM leads WHERE creado_en >= datetime('now', '-7 days')"
-    ).fetchone()[0]
     conn.close()
 
-    return jsonify({
-        "total_leads": total,
-        "ultimos_7_dias": ultimos_7_dias,
-        "por_estado": [dict(r) for r in por_estado],
-        "por_servicio": [dict(r) for r in por_servicio],
-    })
+    return jsonify({"total": total})
 
 
-# ── HEALTH CHECK ────────────────────────────────────────────────
+# ── HEALTH CHECK ───────────────────────────────────────────────
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+    return jsonify({"status": "ok"})
 
 
-# ── INICIAR SERVIDOR ────────────────────────────────────────────
+# ── SERVIDOR ───────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"""
-╔══════════════════════════════════════╗
-║   CodeForge Studio · Backend API     ║
-╠══════════════════════════════════════╣
-║  http://localhost:{port:<20}║
-║  Base de datos: codeforge.db         ║
-╚══════════════════════════════════════╝
-    """)
-    app.run(debug=False, host="0.0.0.0", port=port)
+    print(f"🚀 Servidor en puerto {port}")
+    app.run(host="0.0.0.0", port=port)

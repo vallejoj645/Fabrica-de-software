@@ -449,7 +449,7 @@
     </div>
     <div class="field">
       <label for="pass">Contraseña</label>
-      <input id="pass" type="password" placeholder="......" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()"/>
+      <input id="pass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()"/>
     </div>
     <button class="btn-login" onclick="login()">Iniciar sesión</button>
     <div class="login-error" id="loginError">Credenciales incorrectas. Intenta de nuevo.</div>
@@ -626,12 +626,24 @@
 // ─────────────────────────────────────────────
 //  ESTADO GLOBAL
 // ─────────────────────────────────────────────
-let leads = [];
+let leads        = [];
 let filtroEstado = 'todos';
-let chart = null;
-let ultimoTotal = null;   // null = primera carga, no disparar toast
+let chart        = null;
+let ultimoTotal  = null;
 let pollingInterval = null;
-let leadActual = null;
+let leadActual   = null;
+
+// ✅ Credenciales guardadas al hacer login
+let authUser = '';
+let authPass = '';
+
+// ✅ Helper que genera los headers de autenticación Basic
+function authHeaders() {
+  return {
+    'Authorization': 'Basic ' + btoa(authUser + ':' + authPass),
+    'Content-Type': 'application/json'
+  };
+}
 
 // ─────────────────────────────────────────────
 //  LOGIN
@@ -641,21 +653,36 @@ function login() {
   const p = document.getElementById('pass').value;
   const errEl = document.getElementById('loginError');
 
-  if (u === 'admin' && p === '123456') {
-    errEl.style.display = 'none';
-    document.getElementById('login').style.display = 'none';
-    document.getElementById('panel').style.display = 'block';
-    iniciarPanel();
-  } else {
+  // ✅ Verificar credenciales contra el backend directamente
+  fetch('/api/stats', {
+    headers: {
+      'Authorization': 'Basic ' + btoa(u + ':' + p),
+      'Content-Type': 'application/json'
+    }
+  }).then(res => {
+    if (res.ok) {
+      authUser = u;
+      authPass = p;
+      errEl.style.display = 'none';
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('panel').style.display = 'block';
+      iniciarPanel();
+    } else {
+      errEl.style.display = 'block';
+      document.getElementById('pass').value = '';
+    }
+  }).catch(() => {
+    errEl.textContent = 'No se pudo conectar con el servidor.';
     errEl.style.display = 'block';
-    document.getElementById('pass').value = '';
-  }
+  });
 }
 
 function logout() {
   clearInterval(pollingInterval);
   leads = [];
   ultimoTotal = null;
+  authUser = '';
+  authPass = '';
   if (chart) { chart.destroy(); chart = null; }
   document.getElementById('panel').style.display = 'none';
   document.getElementById('login').style.display  = 'flex';
@@ -668,7 +695,6 @@ function logout() {
 // ─────────────────────────────────────────────
 async function iniciarPanel() {
   await Promise.all([cargar(), cargarStats()]);
-  // Iniciar polling — sin disparar toast en la primera carga
   pollingInterval = setInterval(polling, 8000);
 }
 
@@ -678,10 +704,13 @@ async function iniciarPanel() {
 async function cargar() {
   setLoadingTable(true);
   try {
-    const res  = await fetch('/api/leads?limite=200');
+    // ✅ Envía credenciales
+    const res = await fetch('/api/leads?limite=200', {
+      headers: authHeaders()
+    });
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
-    leads = data.leads || [];
+    leads = Array.isArray(data) ? data : (data.leads || []);
     actualizarTimestamp();
     render();
   } catch (e) {
@@ -759,23 +788,22 @@ function render() {
 // ─────────────────────────────────────────────
 async function cambiarEstado(id, estado) {
   try {
+    // ✅ Envía credenciales
     const res = await fetch(`/api/leads/${id}/estado`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ estado })
     });
     if (!res.ok) throw new Error();
-    // Actualizar en local sin recargar todo
     const idx = leads.findIndex(l => l.id === id);
     if (idx !== -1) leads[idx].estado = estado;
     render();
     cargarStats();
     mostrarToast('Estado actualizado', `Lead #${id} → ${estado}`);
-    // Si el modal está abierto para este lead, actualizar badge
     if (leadActual && leadActual.id === id) {
       leadActual.estado = estado;
-      document.getElementById('modal').querySelector('.estado-badge').className = `estado-badge ${estado}`;
-      document.getElementById('modal').querySelector('.estado-badge').textContent = estado.replace('_',' ');
+      const badge = document.getElementById('modal').querySelector('.estado-badge');
+      if (badge) { badge.className = `estado-badge ${estado}`; badge.textContent = estado.replace('_',' '); }
     }
   } catch {
     mostrarToast('Error', 'No se pudo actualizar el estado', true);
@@ -875,22 +903,24 @@ function filtrarEstado(estado, btn) {
 // ─────────────────────────────────────────────
 async function cargarStats() {
   try {
-    const res  = await fetch('/api/stats');
+    // ✅ Envía credenciales
+    const res = await fetch('/api/stats', {
+      headers: authHeaders()
+    });
     if (!res.ok) throw new Error();
     const data = await res.json();
 
-    document.getElementById('statTotal').textContent    = data.total_leads ?? '—';
-    document.getElementById('statRecientes').textContent= data.ultimos_7_dias ?? '—';
+    document.getElementById('statTotal').textContent     = data.total ?? data.total_leads ?? '—';
+    document.getElementById('statRecientes').textContent = data.ultimos_7_dias ?? '—';
 
-    const cerrados  = (data.por_estado || []).find(e => e.estado === 'cerrado');
-    const nuevos    = (data.por_estado || []).find(e => e.estado === 'nuevo');
+    const cerrados = (data.por_estado || []).find(e => e.estado === 'cerrado');
+    const nuevos   = (data.por_estado || []).find(e => e.estado === 'nuevo');
     document.getElementById('statCerrados').textContent = cerrados?.cantidad ?? 0;
     document.getElementById('statNuevos').textContent   = nuevos?.cantidad   ?? 0;
 
-    // Gráfica
-    const labels  = (data.por_estado  || []).map(e => e.estado.replace('_',' '));
-    const values  = (data.por_estado  || []).map(e => e.cantidad);
-    const colors  = ['#00e5ff','#ffb347','#7b5cff','#39ff7e','#ff4d6d'];
+    const labels = (data.por_estado || []).map(e => e.estado.replace('_',' '));
+    const values = (data.por_estado || []).map(e => e.cantidad);
+    const colors = ['#00e5ff','#ffb347','#7b5cff','#39ff7e','#ff4d6d'];
 
     if (chart) chart.destroy();
     chart = new Chart(document.getElementById('grafico'), {
@@ -910,25 +940,17 @@ async function cargarStats() {
         plugins: {
           legend: {
             position: 'bottom',
-            labels: {
-              color: '#6a82a0', font: { family: 'DM Sans', size: 11 },
-              padding: 12, boxWidth: 10, borderRadius: 3
-            }
+            labels: { color: '#6a82a0', font: { family: 'DM Sans', size: 11 }, padding: 12, boxWidth: 10, borderRadius: 3 }
           },
           tooltip: {
-            backgroundColor: '#111e32',
-            borderColor: 'rgba(0,229,255,.2)',
-            borderWidth: 1,
-            titleColor: '#e4edf8',
-            bodyColor:  '#6a82a0',
-            padding: 10
+            backgroundColor: '#111e32', borderColor: 'rgba(0,229,255,.2)', borderWidth: 1,
+            titleColor: '#e4edf8', bodyColor: '#6a82a0', padding: 10
           }
         },
         cutout: '65%'
       }
     });
 
-    // Servicios
     const svcData = (data.por_servicio || []).slice(0, 5);
     const maxSvc  = svcData[0]?.cantidad || 1;
     document.getElementById('svcList').innerHTML = svcData.length
@@ -943,19 +965,22 @@ async function cargarStats() {
       : '<p style="color:var(--muted);font-size:.85rem">Sin datos aún</p>';
 
   } catch {
-    // stats silently fail — don't break the UI
+    // silencioso
   }
 }
 
 // ─────────────────────────────────────────────
-//  POLLING — solo notifica si aumentó el total
+//  POLLING
 // ─────────────────────────────────────────────
 async function polling() {
   try {
-    const res  = await fetch('/api/stats');
+    // ✅ Envía credenciales
+    const res = await fetch('/api/stats', {
+      headers: authHeaders()
+    });
     if (!res.ok) return;
     const data = await res.json();
-    const total = data.total_leads;
+    const total = data.total ?? data.total_leads;
 
     if (ultimoTotal !== null && total > ultimoTotal) {
       const diff = total - ultimoTotal;
@@ -976,17 +1001,14 @@ async function polling() {
 function esc(str) {
   if (!str) return '';
   return String(str)
-    .replace(/&/g,'&amp;')
-    .replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;');
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function formatDate(iso) {
   if (!iso) return '—';
   try {
-    const d = new Date(iso);
-    return d.toLocaleDateString('es-CO', { day:'2-digit', month:'short', year:'numeric' });
+    return new Date(iso).toLocaleDateString('es-CO', { day:'2-digit', month:'short', year:'numeric' });
   } catch { return iso; }
 }
 
@@ -1032,7 +1054,6 @@ function setView(v) {
   event.currentTarget.classList.add('active');
 }
 
-// Cerrar modal con Escape
 document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarModal(); });
 </script>
 </body>
